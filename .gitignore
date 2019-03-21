@@ -1,0 +1,16 @@
+node_modules
+/coverage
+/build
+.project
+.metadata
+*~
+*.log
+*.tmp
+.idea
+*.swp
+nohup.out
+/var
+!/var/log/.gitkeep
+!.gitkeep
+/etc/installation/*
+!/etc/installation/*.dist

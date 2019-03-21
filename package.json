@@ -1,0 +1,29 @@
+{
+  "name": "amqp-tools-cli",
+  "version": "0.1.0",
+  "main": "bin/amqp-consume-queue.js",
+  "license": "MIT",
+  "scripts": {
+    "prepare": "npx tsc && chmod +x build/bin/*",
+    "prepublishOnly": "npm shrinkwrap"
+  },
+  "bin": {
+    "amqp": "build/bin/amqp.js"
+  },
+  "dependencies": {
+    "amqplib": "^0.5.3",
+    "bunyan": "^1.8.12",
+    "bunyan-format": "^0.2.1",
+    "uuid": "^3.3.2",
+    "yargs": "^13.2.2"
+  },
+  "devDependencies": {
+    "@types/amqplib": "^0.5.11",
+    "@types/bunyan": "^1.8.6",
+    "@types/bunyan-format": "^0.2.0",
+    "@types/uuid": "^3.4.4",
+    "@types/yargs": "^12.0.10",
+    "nodemon": "^1.18.10",
+    "tslint": "^5.14.0"
+  }
+}

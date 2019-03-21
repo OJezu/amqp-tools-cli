@@ -1,0 +1,20 @@
+{
+    "defaultSeverity": "error",
+    "extends": [
+        "tslint:recommended"
+    ],
+    "jsRules": {},
+    "rules": {
+      "interface-name": false,
+      "max-line-length": {
+        "severity": "warning",
+        "options": [120]
+      },
+      "no-magic-numbers": true,
+      "no-unused-expression": [true, "allow-fast-null-checks"],
+      "typedef": [true, "call-signature", "parameter", "property-declaration", "member-variable-declaration"],
+      "variable-name": [true, "allow-leading-underscore"]
+    },
+    "project": "./tsconfig.json",
+    "rulesDirectory": []
+}
