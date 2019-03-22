@@ -8,7 +8,7 @@ with added support for heartbeats, logging and (hopefully) less crashing.
 ## Installation
 ```
 # Install with npm:
-npm install --global amqp-tools-cli
+npm install --global --no-dev amqp-tools-cli
 
 # Run with npx:
 npx amqp --help
@@ -39,7 +39,7 @@ the consumer will exit after last child process exits.
  heartbeat    | number | no        | 60        | heartbeat in seconds, if server does not respond within 2 heartbeats, the connection will be closed
  log-level    | string | no        | warn      | valid values are: fatal, error, warn, info, trace, debug
 
-All options can be read from environmental variables with prefix "AMQP", e.g. password can be given as:
+All options can be read from environmental variables with prefix "AMQP_TOOLS", e.g. password can be given as:
 
 ```
 npx amqp consume-queue --queue="queue" --password="mysecretpassword" -- ./on-message.sh # password on command line, a bad idea
@@ -48,7 +48,7 @@ npx amqp consume-queue --queue="queue" --password="mysecretpassword" -- ./on-mes
 or:
 
 ```
-env AMQP_PASSWORD="mysecretpassword" npx amqp consume-queue --queue="queue" -- ./on-message.sh
+env AMQP_TOOLS_PASSWORD="mysecretpassword" npx amqp consume-queue --queue="queue" -- ./on-message.sh
 ```
 
 ### amqp consume-queue

@@ -1,6 +1,6 @@
 {
   "name": "amqp-tools-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "build/bin/amqp.js",
   "license": "MIT",
   "scripts": {

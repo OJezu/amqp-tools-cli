@@ -11,7 +11,7 @@ import CommandLoader from "../Service/CommandLoader";
 
 yargs.strict();
 yargs.recommendCommands();
-yargs.env("AMQP");
+yargs.env("AMQP_TOOLS");
 
 const commandLoader = new CommandLoader({yargs});
 
