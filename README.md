@@ -92,16 +92,10 @@ Creates an exclusive queue, binds it to an existing exchange using provided rout
 
 #### examples
 
-Tap into messages from default exchange, destined for a different queue:
+Listen for all messages passing through topic exchange
 
 ```
-npx amqp consume-exchange --exchange "" --routing-key "queue"  -- cat
-```
-
-Tap into messages from default exchange, destined for a different queue:
-
-```
-npx amqp consume-exchange --exchange "" --routing-key "queue"  -- cat
+npx amqp consume-exchange --exchange "amq.topic" --routing-key "#"  -- cat
 ```
 
 ### amqp publish-message

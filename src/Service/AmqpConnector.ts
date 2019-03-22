@@ -47,7 +47,7 @@ export default class AmqpConnector {
     const amqpChannel = await this._amqpChannel;
 
     const queueName = (await amqpChannel.assertQueue("", {exclusive: true})).queue;
-    await amqpChannel.bindQueue("queueName", configuration.exchangeName(), configuration.routingKey());
+    await amqpChannel.bindQueue(queueName, configuration.exchangeName(), configuration.routingKey());
 
     await this.consume(queueName, configuration, consumer);
   }
