@@ -1,7 +1,7 @@
 {
   "name": "amqp-tools-cli",
-  "version": "0.1.0",
-  "main": "bin/amqp-consume-queue.js",
+  "version": "0.1.1",
+  "main": "build/bin/amqp.js",
   "license": "MIT",
   "scripts": {
     "prepare": "npx tsc && chmod +x build/bin/*",
@@ -25,5 +25,8 @@
     "@types/yargs": "^12.0.10",
     "nodemon": "^1.18.10",
     "tslint": "^5.14.0"
-  }
+  },
+  "description": "Simple cli amqp-tools for receiving and publishing messages",
+  "repository": "https://github.com/OJezu/amqp-tools-cli",
+  "author": "Krzysztof Chrapka"
 }

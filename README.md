@@ -7,10 +7,7 @@ with added support for heartbeats, logging and (hopefully) less crashing.
 
 ## Installation
 ```
-# Install with yarn:
-yarn global add amqp-tools-cli
-
-# Or install with npm:
+# Install with npm:
 npm install --global amqp-tools-cli
 
 # Run with npx:
