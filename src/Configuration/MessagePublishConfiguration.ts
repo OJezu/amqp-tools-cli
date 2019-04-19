@@ -18,6 +18,14 @@ export default class MessagePublishConfiguration extends CommandConfiguration {
       .option("content-type", {
         type: "string",
       })
+      .option("request-reply", {
+        default: false,
+        type: "boolean",
+      })
+      .option("reply-timeout", {
+        default: 3600,
+        type: "number",
+      })
       // https://github.com/yargs/yargs/issues/1324 - disabled, as this eats quotes
       // .command("$0 <content>", "Message content, if missing, stdin will be used")
     ;
@@ -26,7 +34,9 @@ export default class MessagePublishConfiguration extends CommandConfiguration {
   private readonly _routingKey: string;
   private readonly _exchangeName: string;
   private readonly _contentType: string;
+  private readonly _requestReply: boolean;
   private readonly _content: string;
+  private readonly _replyTimeout: number;
 
   constructor(args: any) {
     super(args);
@@ -34,6 +44,8 @@ export default class MessagePublishConfiguration extends CommandConfiguration {
     this._exchangeName = args.exchange;
     this._routingKey = args.routingKey;
     this._contentType = args.contentType;
+    this._requestReply = args.requestReply;
+    this._replyTimeout = args.replyTimeout;
     this._content = args._[0];
   }
 
@@ -53,5 +65,13 @@ export default class MessagePublishConfiguration extends CommandConfiguration {
     return {
       contentType: this._contentType,
     };
+  }
+
+  public requestReply(): boolean {
+    return this._requestReply;
+  }
+
+  public replyTimeout(): number {
+    return this._replyTimeout;
   }
 }

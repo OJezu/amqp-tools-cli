@@ -7,6 +7,7 @@ import yargs from "yargs";
 import ConsumeExchangeCommand from "../Command/ConsumeExchangeCommand";
 import ConsumeQueueCommand from "../Command/ConsumeQueueCommand";
 import PublishCommand from "../Command/PublishCommand";
+import PublishMultipleCommand from "../Command/PublishMultipleCommand";
 import CommandLoader from "../Service/CommandLoader";
 
 yargs.strict();
@@ -18,6 +19,7 @@ const commandLoader = new CommandLoader({yargs});
 commandLoader.registerCommand(new ConsumeExchangeCommand());
 commandLoader.registerCommand(new ConsumeQueueCommand());
 commandLoader.registerCommand(new PublishCommand());
+commandLoader.registerCommand(new PublishMultipleCommand());
 
 commandLoader.run().catch((error) => {
   console.log(error);

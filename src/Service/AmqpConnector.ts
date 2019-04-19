@@ -1,4 +1,4 @@
-import {ConfirmChannel, connect, Connection, Message} from "amqplib";
+import {ConfirmChannel, connect, Connection, Message, Options, Replies} from "amqplib";
 import Logger = require("bunyan");
 import AmqpConfiguration from "../Configuration/AmqpConfiguration";
 import ConsumeConfiguration from "../Configuration/ConsumeConfiguration";
@@ -7,12 +7,16 @@ import MessagePublishConfiguration from "../Configuration/MessagePublishConfigur
 import QueueConsumeConfiguration from "../Configuration/QueueConsumeConfiguration";
 
 export default class AmqpConnector {
-  private readonly _logger: Logger;
   private readonly _amqpChannel: Promise<ConfirmChannel>;
   private readonly _amqpConnection: Promise<Connection>;
+  private readonly _awaitingReply: {[correlationId: string]: () => void};
+  private readonly _logger: Logger;
+  private readonly _onError: (connectionError: (Error | null)) => void;
   private _closingAfterCurrentMessages: boolean;
   private _messagesBeingConsumed: number;
-  private _onError: (connectionError: (Error | null)) => void;
+  private _replyQueue: Promise<string> | undefined;
+  private _replyConsumer: Promise<Replies.Consume> | undefined;
+  private _awaitingReplyCount: number;
 
   constructor({
     logger,
@@ -28,6 +32,8 @@ export default class AmqpConnector {
 
     this._closingAfterCurrentMessages = false;
     this._messagesBeingConsumed = 0;
+    this._awaitingReply = {};
+    this._awaitingReplyCount = 0;
 
     this._amqpConnection = this.connect(amqpConfiguration);
     this._amqpChannel = this.openChannel();
@@ -45,7 +51,6 @@ export default class AmqpConnector {
     consumer: (msg: Message) => Promise<void>,
   ): Promise<void> {
     const amqpChannel = await this._amqpChannel;
-
     const queueName = (await amqpChannel.assertQueue("", {exclusive: true})).queue;
     await amqpChannel.bindQueue(queueName, configuration.exchangeName(), configuration.routingKey());
 
@@ -54,21 +59,35 @@ export default class AmqpConnector {
 
   public async publishMessage(messageConfiguration: MessagePublishConfiguration, content: Buffer): Promise<void> {
     const amqpChannel = await this._amqpChannel;
+    // tslint:disable-next-line:no-magic-numbers
+    const messageId = Math.random().toString().slice(2);
+    const messageOptions = Object.assign({messageId}, messageConfiguration.messageOptions());
+    const messageLogger = this._logger.child({messageId});
+    messageLogger.debug("Publising message");
+    let replyPromise = Promise.resolve();
+
+    if (messageConfiguration.requestReply()) {
+      messageLogger.debug("Setting up reply request");
+      messageOptions.replyTo = (await this.replyQueue());
+      messageOptions.correlationId = messageId;
+      replyPromise = this.awaitReply(await this._amqpChannel, messageOptions, messageConfiguration.replyTimeout());
+    }
 
     amqpChannel.publish(
       messageConfiguration.exchangeName(),
       messageConfiguration.routingKey(),
       content,
-      messageConfiguration.messageOptions(),
+      messageOptions,
     );
 
-    await amqpChannel.waitForConfirms();
-
-    this._logger.info("Published message", {
+    messageLogger.info("Published message", {
       exchange: messageConfiguration.exchangeName(),
-      options: messageConfiguration.messageOptions(),
+      options: messageOptions,
       routingKey: messageConfiguration.routingKey(),
     });
+
+    await amqpChannel.waitForConfirms();
+    await replyPromise;
   }
 
   public async close(): Promise<void> {
@@ -108,23 +127,38 @@ export default class AmqpConnector {
   ): Promise<void> {
     const amqpChannel = await this._amqpChannel;
     await amqpChannel.prefetch(configuration.prefetch());
-
+    this._logger.debug(`Prefetch is set to  ${configuration.prefetch()}`);
     this._logger.info(`Starting consuming messages from queue ${queueName}`);
 
     const consumerPromise = amqpChannel.consume(queueName, async (msg: Message | null) => {
         if (msg) {
-          // track how many messages are being processed at any time
           ++this._messagesBeingConsumed;
+          const messageLogger = this._logger.child({messageId: msg.properties.messageId});
           this._logger.debug(`Messages being consumed: ${this._messagesBeingConsumed}`);
 
           try {
             await consumerFunction(msg);
+            messageLogger.debug("ack-ing message");
             amqpChannel.ack(msg);
-          } catch (consumerError) {
-            this._logger.error(consumerError);
 
-            // If we are to close on one consumer failing, first cancel consumer and receiving new messages,
-            // then wait for all consumers to finish their work and disconnect. The process should end at this point.
+            if (msg.properties.replyTo) {
+              messageLogger.debug("Message reply requested", {
+                correlationId: msg.properties.correlationId,
+                replyTo: msg.properties.replyTo,
+              });
+              amqpChannel.publish(
+                "",
+                msg.properties.replyTo,
+                Buffer.from([]),
+                {correlationId: msg.properties.correlationId},
+              );
+            }
+          } catch (consumerError) {
+            messageLogger.error(consumerError);
+
+            // If we are to close after one of the consumers failed, first cancel amqp consumer and stop receiving
+            // new messages, then wait for all consumers to finish their work and disconnect.
+            // The process should exit at this point.
             if (configuration.closeOnConsumerError() && !this._closingAfterCurrentMessages) {
               this._closingAfterCurrentMessages = true;
               this._logger.warn("Canceling all consumers");
@@ -139,12 +173,12 @@ export default class AmqpConnector {
               }
             }
 
-            this._logger.info("nAck-ing the message back to broker");
+            messageLogger.info("nAck-ing the message back to broker");
 
             try {
               await amqpChannel.nack(msg);
             } catch {
-              this._logger.warn("Failed to nAck the message back to broker, maybe the connection is closed?");
+              messageLogger.warn("Failed to nAck the message back to broker, maybe the connection is closed?");
             }
           } finally {
             --this._messagesBeingConsumed;
@@ -156,8 +190,62 @@ export default class AmqpConnector {
             }
           }
         }
-      });
+      }, {noAck: false});
 
     await consumerPromise;
+  }
+
+  private replyQueue(): Promise<string> {
+    if (!this._replyQueue) {
+      this._replyQueue = this._amqpChannel.then(
+        async (amqpChannel) => (await amqpChannel.assertQueue("", {exclusive: true})).queue,
+      );
+    }
+
+    return this._replyQueue;
+  }
+
+  private awaitReply(amqpChannel: ConfirmChannel, messageOptions: Options.Publish, timeout: number): Promise<void> {
+    if (!messageOptions.replyTo || !messageOptions.correlationId) {
+      return Promise.reject(new Error(`Both replyTo and correlationId must be set in messageOptions`));
+    }
+
+    if (!this._replyConsumer) {
+      this._replyConsumer = amqpChannel.consume(messageOptions.replyTo, (msg: Message | null) => {
+        if (msg) {
+          if (this._awaitingReply[msg.properties.correlationId]) {
+            this._logger.info(`Received reply for message: ${msg.properties.correlationId}`);
+            this._awaitingReply[msg.properties.correlationId]();
+            delete this._awaitingReply[msg.properties.correlationId];
+            this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
+          } else {
+            this._logger.warn(`Received reply for unknown message: ${msg.properties.correlationId}`);
+          }
+        }
+      }, {noAck: true}) as unknown as Promise<Replies.Consume>;
+    }
+
+    const replyPromise = new Promise<void>((resolve) => {
+      this._logger.debug(`Setting up reply listener for message: ${messageOptions.correlationId}`);
+      this._logger.debug(`Awaiting for ${++this._awaitingReplyCount} replies`);
+      this._awaitingReply[messageOptions.correlationId as string] = resolve;
+    });
+
+    return timeout > 0 ? Promise.race<void>([
+      replyPromise,
+      new Promise<void>((resolve, reject) => {
+        setTimeout(() => {
+          reject(new Error("Timeout"));
+        }, timeout * 1000); // tslint:disable-line:no-magic-numbers
+      }),
+    ]).catch((error: Error) => {
+      if  (error.message === "Timeout") {
+        this._logger.error(`Reply for message: ${messageOptions.correlationId} timed out after ${timeout} seconds`);
+        delete this._awaitingReply[messageOptions.correlationId as string];
+        this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
+      } else {
+        throw error;
+      }
+    }) : replyPromise;
   }
 }
