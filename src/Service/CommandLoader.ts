@@ -8,7 +8,7 @@ import CommandConfiguration from "../Configuration/CommandConfiguration";
 import AmqpConnector from "./AmqpConnector";
 
 export default class CommandLoader {
-  private _commands: {[commandName: string]: CommandInterface<CommandConfiguration>};
+  private readonly _commands: {[commandName: string]: CommandInterface<CommandConfiguration>};
   private _yargs: Argv;
 
   constructor({yargs}: {yargs: Argv}) {
@@ -57,7 +57,6 @@ export default class CommandLoader {
         onError: (connectionError) => {
           if (connectionError) {
             logger.fatal(connectionError);
-            process.exit(1);
           } else {
             logger.info("Disconnected from amqp");
           }

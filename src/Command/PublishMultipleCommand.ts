@@ -48,7 +48,7 @@ export default class PublishMultipleCommand implements CommandInterface<Multiple
         });
       }
     }).finally(() => {
-      amqpConnector.close();
+      return amqpConnector.close();
     });
   }
 

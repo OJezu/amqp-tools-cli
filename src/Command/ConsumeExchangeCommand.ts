@@ -14,7 +14,7 @@ export default class ConsumeExchangeCommand implements CommandInterface<Exchange
 
   public commandDescription(): string {
     return "Creates an exclusive queue, that will be bound to named exchange with given routingKey,"
-      + " and starts consuming mesages.";
+      + " and starts consuming messages.";
   }
 
   public decorateYargs(yargs: Argv): Argv {

@@ -5,18 +5,27 @@ import ConsumeConfiguration from "../Configuration/ConsumeConfiguration";
 import ExchangeConsumeConfiguration from "../Configuration/ExchangeConsumeConfiguration";
 import MessagePublishConfiguration from "../Configuration/MessagePublishConfiguration";
 import QueueConsumeConfiguration from "../Configuration/QueueConsumeConfiguration";
+import {PromiseTimeoutError} from "../Error/PromiseTimeoutError";
 
 export default class AmqpConnector {
+  public static readonly INTERCEPTED_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
+  private static readonly QUEUE_WATCHDOG_PERIOD: number = 60 * 1000; // tslint:disable-line:no-magic-numbers
+
   private readonly _amqpChannel: Promise<ConfirmChannel>;
   private readonly _amqpConnection: Promise<Connection>;
   private readonly _awaitingReply: {[correlationId: string]: () => void};
   private readonly _logger: Logger;
   private readonly _onError: (connectionError: (Error | null)) => void;
+  private _amqpConsumer: PromiseLike<Replies.Consume> | undefined;
   private _closingAfterCurrentMessages: boolean;
   private _messagesBeingConsumed: number;
   private _replyQueue: Promise<string> | undefined;
   private _replyConsumer: Promise<Replies.Consume> | undefined;
   private _awaitingReplyCount: number;
+  private _queueWatchdogTimeout: NodeJS.Timeout|undefined;
+  private _signalHandlers: Array<[NodeJS.Signals, NodeJS.SignalsListener]> | undefined;
+  private _closePromise: Promise<void> | undefined;
+  private _abortConsumerPromise: Promise<void> | undefined;
 
   constructor({
     logger,
@@ -63,14 +72,14 @@ export default class AmqpConnector {
     const messageId = Math.random().toString().slice(2);
     const messageOptions = Object.assign({messageId}, messageConfiguration.messageOptions());
     const messageLogger = this._logger.child({messageId});
-    messageLogger.debug("Publising message");
+    messageLogger.debug("Publishing message");
     let replyPromise = Promise.resolve();
 
     if (messageConfiguration.requestReply()) {
       messageLogger.debug("Setting up reply request");
       messageOptions.replyTo = (await this.replyQueue());
       messageOptions.correlationId = messageId;
-      replyPromise = this.awaitReply(await this._amqpChannel, messageOptions, messageConfiguration.replyTimeout());
+      replyPromise = this.awaitReply(amqpChannel, messageOptions, messageConfiguration.replyTimeout());
     }
 
     amqpChannel.publish(
@@ -86,18 +95,33 @@ export default class AmqpConnector {
       routingKey: messageConfiguration.routingKey(),
     });
 
-    await amqpChannel.waitForConfirms();
-    await replyPromise;
+    // await for both, replyPromise might timeout at any moment
+    (await Promise.all([amqpChannel.waitForConfirms(), replyPromise]));
+
+    return await replyPromise;
   }
 
   public async close(): Promise<void> {
-    const connection = await this._amqpConnection;
-    try {
-      this._logger.info("Closing amqp connection");
-      await connection.close();
-    } catch (error) {
-      this._logger.warn("Failed to close connection to amqp - it probably has been closed before.");
+    if (!this._closePromise) {
+      this._closePromise = (async () => {
+        if (this._queueWatchdogTimeout) {
+          clearTimeout(this._queueWatchdogTimeout);
+        }
+
+        this.tearDownSignalHandlers();
+        const connection = await this._amqpConnection;
+        await this.abortConsumer();
+
+        try {
+          this._logger.info("Closing amqp connection");
+          await connection.close();
+        } catch (error) {
+          this._logger.warn("Failed to close connection to amqp - it probably has been closed before.");
+        }
+      })();
     }
+
+    return this._closePromise;
   }
 
   private async connect(amqpConfiguration: AmqpConfiguration): Promise<Connection> {
@@ -114,7 +138,6 @@ export default class AmqpConnector {
 
   private async openChannel(): Promise<ConfirmChannel> {
     const channel = await (await this._amqpConnection).createConfirmChannel();
-
     this._logger.debug("Opened amqp ConfirmChannel");
 
     return channel;
@@ -130,13 +153,25 @@ export default class AmqpConnector {
     this._logger.debug(`Prefetch is set to  ${configuration.prefetch()}`);
     this._logger.info(`Starting consuming messages from queue ${queueName}`);
 
-    const consumerPromise = amqpChannel.consume(queueName, async (msg: Message | null) => {
+    if (this._amqpConsumer) {
+      throw new Error("Consumer already started for this connector");
+    }
+
+    this._amqpConsumer = amqpChannel.consume(
+      queueName,
+      async (msg: Message | null) => {
+        this.queueWatchdog(queueName);
+
         if (msg) {
           ++this._messagesBeingConsumed;
           const messageLogger = this._logger.child({messageId: msg.properties.messageId});
           this._logger.debug(`Messages being consumed: ${this._messagesBeingConsumed}`);
 
           try {
+            if (this._closingAfterCurrentMessages) {
+              throw new Error("Consumer is closing but we got another message, skip it.");
+            }
+
             await consumerFunction(msg);
             messageLogger.debug("ack-ing message");
             amqpChannel.ack(msg);
@@ -154,20 +189,17 @@ export default class AmqpConnector {
               );
             }
           } catch (consumerError) {
-            messageLogger.error(consumerError);
+            // messageLogger.error(consumerError);
 
             // If we are to close after one of the consumers failed, first cancel amqp consumer and stop receiving
             // new messages, then wait for all consumers to finish their work and disconnect.
             // The process should exit at this point.
             if (configuration.closeOnConsumerError() && !this._closingAfterCurrentMessages) {
-              this._closingAfterCurrentMessages = true;
-              this._logger.warn("Canceling all consumers");
+              this._logger.warn("Closing after all current messages are processed");
 
               // one of the reasons we are shutting down may be connection going away, so expect further errors
               try {
-                const consumer = await consumerPromise;
-                this._logger.debug("Canceling the consumer");
-                await amqpChannel.cancel(consumer.consumerTag);
+                await this.abortConsumer();
               } catch (closingError) {
                 this._logger.error(closingError);
               }
@@ -184,15 +216,70 @@ export default class AmqpConnector {
             --this._messagesBeingConsumed;
             this._logger.debug(`Messages being consumed: ${this._messagesBeingConsumed}`);
 
-            if (this._closingAfterCurrentMessages && this._messagesBeingConsumed === 0) {
-              this._logger.warn("All consumers finished, closing connection");
-              await this.close();
-            }
+            await this.checkForSafeShutdown();
           }
         }
-      }, {noAck: false});
+      },
+      {noAck: false},
+    );
 
-    await consumerPromise;
+    this.setupSignalHandlers(configuration);
+    this.queueWatchdog(queueName);
+    await this._amqpConsumer;
+  }
+
+  private async abortConsumer(): Promise<void> {
+    if (!this._abortConsumerPromise) {
+      this._abortConsumerPromise = (async () => {
+        if (this._amqpConsumer) {
+          const consumerPromise = this._amqpConsumer;
+          this._amqpConsumer = undefined;
+          this._closingAfterCurrentMessages = true;
+          this._logger.debug("Canceling the consumer");
+          const [amqpChannel, consumer] = await Promise.all([this._amqpChannel, consumerPromise]);
+          await amqpChannel.cancel(consumer.consumerTag);
+        } else {
+          this._logger.warn("No consumer to be aborted found");
+        }
+      })();
+    }
+
+    return this._abortConsumerPromise;
+  }
+
+  private setupSignalHandlers(configuration: ConsumeConfiguration): void {
+    if (!this._signalHandlers) {
+      process.setMaxListeners(configuration.prefetch() + 1);
+      const listener = async (signalName: string) => {
+        this._logger.warn(`Received signal ${signalName}, closing after child processes end.`);
+        await this.abortConsumer();
+        await this.checkForSafeShutdown();
+      };
+
+      this._signalHandlers = AmqpConnector.INTERCEPTED_SIGNALS.map(
+        (signalName): [NodeJS.Signals, NodeJS.SignalsListener] => {
+          process.on(signalName, listener);
+
+          return [
+            signalName,
+            listener,
+          ];
+        },
+      );
+    }
+  }
+
+  private tearDownSignalHandlers(): void {
+    if (this._signalHandlers) {
+      this._signalHandlers.forEach((handler) => process.removeListener(...handler));
+    }
+  }
+
+  private async checkForSafeShutdown(): Promise<void> {
+    if (this._closingAfterCurrentMessages && this._messagesBeingConsumed === 0) {
+      this._logger.warn("All consumers finished, closing connection");
+      await this.close();
+    }
   }
 
   private replyQueue(): Promise<string> {
@@ -231,21 +318,41 @@ export default class AmqpConnector {
       this._awaitingReply[messageOptions.correlationId as string] = resolve;
     });
 
-    return timeout > 0 ? Promise.race<void>([
-      replyPromise,
-      new Promise<void>((resolve, reject) => {
-        setTimeout(() => {
-          reject(new Error("Timeout"));
-        }, timeout * 1000); // tslint:disable-line:no-magic-numbers
-      }),
-    ]).catch((error: Error) => {
-      if  (error.message === "Timeout") {
-        this._logger.error(`Reply for message: ${messageOptions.correlationId} timed out after ${timeout} seconds`);
-        delete this._awaitingReply[messageOptions.correlationId as string];
-        this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
-      } else {
-        throw error;
+    timeout = timeout * 1000; // tslint:disable-line:no-magic-numbers
+
+    return PromiseTimeoutError.wrap(timeout, replyPromise).finally(() => {
+      delete this._awaitingReply[messageOptions.correlationId as string];
+      this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
+    });
+  }
+
+  private queueWatchdog(queueName: string): void {
+    if (this._queueWatchdogTimeout) {
+      clearTimeout(this._queueWatchdogTimeout);
+    }
+
+    this._queueWatchdogTimeout = setTimeout(async () => {
+      const amqpChannel = await this._amqpChannel;
+      let queueOk = false;
+
+      try {
+        this._logger.debug(`Queue watchdog checking: ${queueName}`);
+        await amqpChannel.checkQueue(queueName);
+        queueOk = true;
+      } catch (error) {
+        this._logger.error(error);
       }
-    }) : replyPromise;
+
+      if (queueOk) {
+        this.queueWatchdog(queueName);
+      } else {
+        try {
+          await this.abortConsumer();
+          await this.checkForSafeShutdown();
+        } catch (error) {
+          this._onError(error);
+        }
+      }
+    }, AmqpConnector.QUEUE_WATCHDOG_PERIOD);
   }
 }
