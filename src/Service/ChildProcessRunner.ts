@@ -1,5 +1,6 @@
 import {ChildProcess, spawn} from "child_process";
 import {v4} from "uuid";
+import ChildProcessError from "../Error/ChildProcessError";
 import AmqpConnector from "./AmqpConnector";
 
 import Logger = require("bunyan");
@@ -15,7 +16,7 @@ export default class ChildProcessRunner {
     const childLogger = this._logger.child({childProcess: v4()});
 
     childLogger.info(`Creating a child process for command: ${command} ${commandArgs.join(" ")}`);
-    const childProcess = spawn(command, commandArgs);
+    const childProcess = spawn(command, commandArgs, {detached: true});
     const handlers = this.setupSignalInterceptors(childProcess);
 
     const childProcessPromise = new Promise<number>((resolve, reject) => {
@@ -25,16 +26,16 @@ export default class ChildProcessRunner {
       childProcess.on("error", (error) => {
         reject(error);
       });
-      childProcess.on("close", (code, signalName) => {
+      childProcess.on("exit", (code, signalName) => {
         if (code === 0) {
           childLogger.info(`Child process ended with code ${code}`);
           resolve(0);
         } else if (code !== null) {
           childLogger.error(`Child process ended with code ${code}`);
-          reject(`Child process ended with code ${code}`);
+          reject(new ChildProcessError(`Child process ended with code ${code}`));
         } else {
           childLogger.warn(`Child process ended due to signal ${signalName}`);
-          reject(`Child process ended due to signal ${signalName}`);
+          reject(new ChildProcessError(`Child process ended due to signal ${signalName}`));
         }
       });
     }).finally(() => {
@@ -44,7 +45,7 @@ export default class ChildProcessRunner {
     if (childProcess.stdin) {
       childProcess.stdin.end(stdin);
     } else {
-      childProcess.kill();
+      process.kill(-childProcess.pid);
       throw new Error("Child process does not have an open stdin, cannot redirect the message");
     }
 
@@ -56,7 +57,7 @@ export default class ChildProcessRunner {
       (signalName): [NodeJS.Signals, NodeJS.SignalsListener] => {
         const listener = () => {
           this._logger.debug(`Forwarding signal ${signalName} to child process.`);
-          childProcess.kill(signalName);
+          process.kill(-childProcess.pid, signalName);
         };
         process.on(signalName, listener);
 

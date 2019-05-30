@@ -5,6 +5,7 @@ import ConsumeConfiguration from "../Configuration/ConsumeConfiguration";
 import ExchangeConsumeConfiguration from "../Configuration/ExchangeConsumeConfiguration";
 import MessagePublishConfiguration from "../Configuration/MessagePublishConfiguration";
 import QueueConsumeConfiguration from "../Configuration/QueueConsumeConfiguration";
+import ChildProcessError from "../Error/ChildProcessError";
 import {PromiseTimeoutError} from "../Error/PromiseTimeoutError";
 
 export default class AmqpConnector {
@@ -189,7 +190,10 @@ export default class AmqpConnector {
               );
             }
           } catch (consumerError) {
-            // messageLogger.error(consumerError);
+            // ChildProcessErrors are already logged by ChildProcessRunner
+            if (!(consumerError instanceof ChildProcessError)) {
+              messageLogger.error(consumerError);
+            }
 
             // If we are to close after one of the consumers failed, first cancel amqp consumer and stop receiving
             // new messages, then wait for all consumers to finish their work and disconnect.

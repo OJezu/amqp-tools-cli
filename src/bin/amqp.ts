@@ -10,6 +10,10 @@ import PublishCommand from "../Command/PublishCommand";
 import PublishMultipleCommand from "../Command/PublishMultipleCommand";
 import CommandLoader from "../Service/CommandLoader";
 
+// node 8 does not have finally method on promises, and that makes me sad.
+// tslint:disable-next-line:no-var-requires
+require("promise.prototype.finally").shim();
+
 yargs.strict();
 yargs.recommendCommands();
 yargs.env("AMQP_TOOLS");

@@ -14,3 +14,5 @@ nohup.out
 !.gitkeep
 /etc/installation/*
 !/etc/installation/*.dist
+npm-shrinkwrap.json
+yarn.lock
