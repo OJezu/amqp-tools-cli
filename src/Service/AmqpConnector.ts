@@ -111,7 +111,7 @@ export default class AmqpConnector {
 
         this.tearDownSignalHandlers();
         const connection = await this._amqpConnection;
-        await this.abortConsumer();
+        await this.abortConsumers();
 
         try {
           this._logger.info("Closing amqp connection");
@@ -203,7 +203,7 @@ export default class AmqpConnector {
 
               // one of the reasons we are shutting down may be connection going away, so expect further errors
               try {
-                await this.abortConsumer();
+                await this.abortConsumers();
               } catch (closingError) {
                 this._logger.error(closingError);
               }
@@ -232,19 +232,22 @@ export default class AmqpConnector {
     await this._amqpConsumer;
   }
 
-  private async abortConsumer(): Promise<void> {
+  private async abortConsumers(): Promise<void> {
     if (!this._abortConsumerPromise) {
       this._abortConsumerPromise = (async () => {
-        if (this._amqpConsumer) {
-          const consumerPromise = this._amqpConsumer;
-          this._amqpConsumer = undefined;
-          this._closingAfterCurrentMessages = true;
-          this._logger.debug("Canceling the consumer");
+        const consumers = [
+          this._replyConsumer,
+          this._amqpConsumer,
+        ].filter(Boolean) as Array<PromiseLike<Replies.Consume>>;
+        this._closingAfterCurrentMessages = true;
+        this._replyConsumer = undefined;
+        this._amqpConsumer = undefined;
+
+        await Promise.all(consumers.map(async (consumerPromise) => {
           const [amqpChannel, consumer] = await Promise.all([this._amqpChannel, consumerPromise]);
+          this._logger.debug("Canceling the consumer");
           await amqpChannel.cancel(consumer.consumerTag);
-        } else {
-          this._logger.warn("No consumer to be aborted found");
-        }
+        }));
       })();
     }
 
@@ -256,7 +259,7 @@ export default class AmqpConnector {
       process.setMaxListeners(configuration.prefetch() + 1);
       const listener = async (signalName: string) => {
         this._logger.warn(`Received signal ${signalName}, closing after child processes end.`);
-        await this.abortConsumer();
+        await this.abortConsumers();
         await this.checkForSafeShutdown();
       };
 
@@ -308,7 +311,6 @@ export default class AmqpConnector {
             this._logger.info(`Received reply for message: ${msg.properties.correlationId}`);
             this._awaitingReply[msg.properties.correlationId]();
             delete this._awaitingReply[msg.properties.correlationId];
-            this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
           } else {
             this._logger.warn(`Received reply for unknown message: ${msg.properties.correlationId}`);
           }
@@ -316,15 +318,14 @@ export default class AmqpConnector {
       }, {noAck: true}) as unknown as Promise<Replies.Consume>;
     }
 
-    const replyPromise = new Promise<void>((resolve) => {
-      this._logger.debug(`Setting up reply listener for message: ${messageOptions.correlationId}`);
-      this._logger.debug(`Awaiting for ${++this._awaitingReplyCount} replies`);
-      this._awaitingReply[messageOptions.correlationId as string] = resolve;
-    });
-
-    timeout = timeout * 1000; // tslint:disable-line:no-magic-numbers
-
-    return PromiseTimeoutError.wrap(timeout, replyPromise).finally(() => {
+    return PromiseTimeoutError.wrap(
+      timeout * 1000, // tslint:disable-line:no-magic-numbers
+      new Promise<void>((resolve) => {
+        this._logger.debug(`Setting up reply listener for message: ${messageOptions.correlationId}`);
+        this._logger.debug(`Awaiting for ${++this._awaitingReplyCount} replies`);
+        this._awaitingReply[messageOptions.correlationId as string] = resolve;
+      }),
+    ).finally(() => {
       delete this._awaitingReply[messageOptions.correlationId as string];
       this._logger.debug(`Awaiting for further ${--this._awaitingReplyCount} replies`);
     });
@@ -351,7 +352,7 @@ export default class AmqpConnector {
         this.queueWatchdog(queueName);
       } else {
         try {
-          await this.abortConsumer();
+          await this.abortConsumers();
           await this.checkForSafeShutdown();
         } catch (error) {
           this._onError(error);
