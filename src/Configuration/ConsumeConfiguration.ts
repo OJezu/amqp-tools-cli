@@ -16,12 +16,22 @@ export default abstract class ConsumeConfiguration extends CommandConfiguration 
         default: false,
         type: "boolean",
       })
+      .option("reject-after-tries", {
+        default: 0,
+        type: "number",
+      })
+      .option("reject-after-seconds", {
+        default: 0,
+        type: "number",
+      })
     ;
   }
   private readonly _n: number;
   private readonly _command: string;
   private readonly _commandArgs: string[];
   private readonly _quitOnConsumerError: boolean;
+  private readonly _rejectAfterTries: number;
+  private readonly _rejectAfterSeconds: number;
 
   protected constructor(args: any) {
     super(args);
@@ -30,6 +40,8 @@ export default abstract class ConsumeConfiguration extends CommandConfiguration 
     this._command = args.command;
     this._commandArgs = args._;
     this._quitOnConsumerError = !args.ignoreConsumerErrors;
+    this._rejectAfterTries = args.rejectAfterTries;
+    this._rejectAfterSeconds = args.rejectAfterSeconds;
   }
 
   public command(): string {
@@ -42,6 +54,15 @@ export default abstract class ConsumeConfiguration extends CommandConfiguration 
 
   public prefetch(): number {
     return this._n;
+  }
+
+  public rejectAfterSeconds(): number {
+    return this._rejectAfterSeconds;
+
+  }
+
+  public rejectAfterTries() : number {
+    return this._rejectAfterTries;
   }
 
   public closeOnConsumerError(): boolean {

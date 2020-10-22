@@ -8,9 +8,12 @@ import QueueConsumeConfiguration from "../Configuration/QueueConsumeConfiguratio
 import ChildProcessError from "../Error/ChildProcessError";
 import {PromiseTimeoutError} from "../Error/PromiseTimeoutError";
 
+const millisecondsPerSecond = 1e3;
+const secondsPerMinute = 60;
+
 export default class AmqpConnector {
   public static readonly INTERCEPTED_SIGNALS: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
-  private static readonly QUEUE_WATCHDOG_PERIOD: number = 60 * 1000; // tslint:disable-line:no-magic-numbers
+  private static readonly QUEUE_WATCHDOG_PERIOD: number = secondsPerMinute * millisecondsPerSecond;
 
   private readonly _amqpChannel: Promise<ConfirmChannel>;
   private readonly _amqpConnection: Promise<Connection>;
@@ -71,7 +74,12 @@ export default class AmqpConnector {
     const amqpChannel = await this._amqpChannel;
     // tslint:disable-next-line:no-magic-numbers
     const messageId = Math.random().toString().slice(2);
-    const messageOptions = Object.assign({messageId}, messageConfiguration.messageOptions());
+    const messageOptions = Object.assign({
+      headers: {
+        ["x-first-publish-timestamp"]: Math.floor(Date.now() / millisecondsPerSecond),
+      },
+      messageId,
+    }, messageConfiguration.messageOptions());
     const messageLogger = this._logger.child({messageId});
     messageLogger.debug("Publishing message");
     let replyPromise = Promise.resolve();
@@ -209,13 +217,8 @@ export default class AmqpConnector {
               }
             }
 
-            messageLogger.info("nAck-ing the message back to broker");
+            await this.nAckOrRequeue(configuration, amqpChannel, messageLogger, msg);
 
-            try {
-              await amqpChannel.nack(msg);
-            } catch {
-              messageLogger.warn("Failed to nAck the message back to broker, maybe the connection is closed?");
-            }
           } finally {
             --this._messagesBeingConsumed;
             this._logger.debug(`Messages being consumed: ${this._messagesBeingConsumed}`);
@@ -359,5 +362,58 @@ export default class AmqpConnector {
         }
       }
     }, AmqpConnector.QUEUE_WATCHDOG_PERIOD);
+  }
+
+  private async nAckOrRequeue(
+    consumeConfiguration: ConsumeConfiguration,
+    amqpChannel: ConfirmChannel,
+    messageLogger: Logger,
+    msg: Message): Promise<void> {
+
+    if (consumeConfiguration.rejectAfterSeconds() > 0 || consumeConfiguration.rejectAfterTries() > 0) {
+      msg.properties.headers["x-redelivered-count"] =
+          Number(msg.properties.headers["x-redelivered-count"] ?? 0) + 1;
+      msg.properties.headers["x-first-publish-timestamp"] =
+        Number(msg.properties.headers["x-first-publish-timestamp"])
+        ?? Math.floor(Date.now() / millisecondsPerSecond);
+
+      const ageSeconds =
+        Math.floor(Date.now() / millisecondsPerSecond) - msg.properties.headers["x-first-publish-timestamp"];
+      const ageOk = consumeConfiguration.rejectAfterSeconds() > 0
+        && ageSeconds < consumeConfiguration.rejectAfterSeconds();
+      const retriesOk = consumeConfiguration.rejectAfterTries() > 0
+        && msg.properties.headers["x-redelivered-count"] < consumeConfiguration.rejectAfterTries();
+      const requeue = ageOk || retriesOk;
+
+      messageLogger.debug("x-redelivered-count: " + msg.properties.headers["x-redelivered-count"]);
+      messageLogger.debug("x-first-publish-timestamp: " + msg.properties.headers["x-first-publish-timestamp"]);
+
+      try {
+        await amqpChannel.nack(msg, false, false);
+
+        if (requeue) {
+          messageLogger.info("Re-queueing the message");
+          await amqpChannel.publish(
+            msg.fields.exchange,
+            msg.fields.routingKey,
+            msg.content,
+            msg.properties,
+          );
+        } else {
+          messageLogger.warn("Too many retries / message too old. Not re-queuing the message");
+        }
+      } catch {
+        messageLogger.warn("Failed to nAck the message back to broker, maybe the connection is closed?");
+      }
+    } else {
+      messageLogger.info("nAck-ing the message back to broker");
+
+      try {
+        await amqpChannel.nack(msg);
+      } catch {
+        messageLogger.warn("Failed to nAck the message back to broker, maybe the connection is closed?");
+      }
+
+    }
   }
 }

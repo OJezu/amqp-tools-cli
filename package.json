@@ -1,6 +1,6 @@
 {
   "name": "amqp-tools-cli",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "main": "build/bin/amqp.js",
   "license": "MIT",
   "scripts": {
@@ -25,7 +25,8 @@
     "@types/uuid": "^3.4.4",
     "@types/yargs": "^12.0.10",
     "nodemon": "^1.18.10",
-    "tslint": "^5.14.0"
+    "tslint": "^5.14.0",
+    "typescript": "^4.0.3"
   },
   "engines": {
     "node": ">=8.16.0"

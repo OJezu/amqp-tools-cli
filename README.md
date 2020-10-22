@@ -59,6 +59,8 @@ Consumes messages from an existing queue.
  -------------------------- | ------ | --------- | ------- | ---
  -n, --prefetch, --parallel | number | no        | 5       | How many messages can be processed in parallel
  --ignore-consumer-errors   | flag   | no        | false   | Continue operations if a command run for message exits with a non-zero status
+ --reject-after-tries       | number | no        | 0       | If message caused consumer to fail this many times, reject it. Values equal or less than 0 disable this check. If reject-after-seconds is also specified, both have to be satisfied for rejection to happen.
+ --reject-after-seconds     | number | no        | 0       | If message caused consumer to fail and was first published more than this many seconds, reject it. Values equal or less than 0 disable this check. If reject-after-tries is also specified, both have to be satisfied for rejection to happen.
  --queue                    | string | yes       |         | Name of the queue to consume commands from
  [--] command               | string | yes       |         | Command/program to invoke for each message with the message content on stdin
  ...commandArguments        | any    | no        |         | Arguments for the command/program
@@ -85,6 +87,8 @@ Creates an exclusive queue, binds it to an existing exchange using provided rout
  -------------------------- | ------ | --------- | ------- | ---
  -n, --prefetch, --parallel | number | no        | 5       | How many messages can be processed in parallel
  --ignore-consumer-errors   | flag   | no        | false   | Continue operations if a command run for message exits with a non-zero status
+ --reject-after-tries       | number | no        | 0       | If message caused consumer to fail this many times, reject it. Values equal or less than 0 disable this check. If reject-after-seconds is also specified, both have to be satisfied for rejection to happen.
+ --reject-after-seconds     | number | no        | 0       | If message caused consumer to fail and was first published more than this many seconds, reject it. Values equal or less than 0 disable this check. If reject-after-tries is also specified, both have to be satisfied for rejection to happen.
  --exchange                 | string | yes       |         | Name of the exchange to bind to
  --routing-key              | string | yes       |         | Routing key pattern to bind with
  [--] command               | string | yes       |         | Command/program to invoke for each message with the message content on stdin
@@ -123,3 +127,20 @@ Publish a JSON message from stdin:
 echo '["Hello I love you, let me jump into your game."]' \
   | npx amqp publish-message --exchange "" --routing-key "queue" --content-type="application/json"
 ```
+
+### Testing
+
+Simplest way to test this library with docker:
+```
+docker run -d --hostname my-rabbit --name some-rabbit -p 5672:5672 rabbitmq:3
+uild/bin/amqp.js consume-exchange --exchange="amq.direct" --routing-key=""  --log-level=info -- cat
+
+#in different terminal
+echo "message" | build/bin/amqp.js publish-message --exchange="" --routing-key=""
+```
+
+Real tests might get even written at some point.
+
+### Notes
+If different message published is used, to make sure `--reject-after-seconds` measures from the time the message was first published, set header
+`x-first-published-timestamp: <unix timestamp>` when publishing the message
